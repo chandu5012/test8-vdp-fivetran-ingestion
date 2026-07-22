@@ -1,0 +1,107 @@
+name: fivetran-deploy
+
+on:
+  pull_request:
+    paths: ["connectors/**", "tables/**"]
+  push:
+    branches: [main]
+    paths: ["connectors/**", "tables/**"]
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Environment to promote to"
+        required: true
+        type: choice
+        options: [dev, stg, qa, prod]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  detect-env:
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.pick.outputs.env }}
+    steps:
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "env=${{ inputs.target_env }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  plan:
+    needs: detect-env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform init
+        working-directory: environments/${{ needs.detect-env.outputs.env }}
+        run: terraform init
+      - name: terraform plan
+        working-directory: environments/${{ needs.detect-env.outputs.env }}
+        run: terraform plan -var-file=${{ needs.detect-env.outputs.env }}.tfvars -out=tfplan
+        env:
+          FIVETRAN_API_KEY: ${{ secrets[format('FIVETRAN_API_KEY_{0}', needs.detect-env.outputs.env)] }}
+          FIVETRAN_API_SECRET: ${{ secrets[format('FIVETRAN_API_SECRET_{0}', needs.detect-env.outputs.env)] }}
+
+  apply-dev:
+    needs: [detect-env, plan]
+    if: needs.detect-env.outputs.env == 'dev' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - working-directory: environments/dev
+        run: terraform init && terraform apply -auto-approve -var-file=dev.tfvars
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY_DEV }}
+          FIVETRAN_API_SECRET: ${{ secrets.FIVETRAN_API_SECRET_DEV }}
+
+  apply-stg:
+    needs: [detect-env, plan]
+    if: needs.detect-env.outputs.env == 'stg' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - working-directory: environments/stg
+        run: terraform init && terraform apply -auto-approve -var-file=stg.tfvars
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY_STG }}
+          FIVETRAN_API_SECRET: ${{ secrets.FIVETRAN_API_SECRET_STG }}
+
+  apply-qa:
+    needs: [detect-env, plan]
+    if: needs.detect-env.outputs.env == 'qa' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: qa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - working-directory: environments/qa
+        run: terraform init && terraform apply -auto-approve -var-file=qa.tfvars
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY_QA }}
+          FIVETRAN_API_SECRET: ${{ secrets.FIVETRAN_API_SECRET_QA }}
+
+  apply-prod:
+    needs: [detect-env, plan]
+    if: needs.detect-env.outputs.env == 'prod' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: hashicorp/setup-terraform@v3
+      - working-directory: environments/prod
+        run: terraform init && terraform apply -auto-approve -var-file=prod.tfvars
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY_PROD }}
+          FIVETRAN_API_SECRET: ${{ secrets.FIVETRAN_API_SECRET_PROD }}
